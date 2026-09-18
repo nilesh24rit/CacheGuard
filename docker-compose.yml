@@ -1,0 +1,21 @@
+services:
+  redis:
+    image: redis/redis-stack:latest
+    container_name: cacheguard-redis
+    ports:
+      - "6379:6379"
+      - "8001:8001"
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: cacheguard-app
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_TIMEOUT: 2000ms
+    depends_on:
+      - redis
+    restart: unless-stopped
