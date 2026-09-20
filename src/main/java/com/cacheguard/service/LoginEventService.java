@@ -1,6 +1,9 @@
 package com.cacheguard.service;
 
 import com.cacheguard.model.LoginRequest;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Map;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -16,6 +19,7 @@ public class LoginEventService {
 
     private static final String STREAM_PREFIX = "login:stream:";
     private static final String HLL_PREFIX = "devices:hll:";
+    private static final String BLOOM_KEY = "creds:bloom:attempts";
 
     private final StringRedisTemplate redisTemplate;
 
@@ -47,8 +51,31 @@ public class LoginEventService {
         redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection ->
                 connection.execute(
                         "PFADD",
-                        hllKey.getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                        deviceId.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                        hllKey.getBytes(StandardCharsets.UTF_8),
+                        deviceId.getBytes(StandardCharsets.UTF_8)
                 ));
+
+        // --- Bloom filter BF.ADD for credential hash ---
+        String credHash = sha256Hex(request.username() + ":" + request.password());
+        redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection ->
+                connection.execute(
+                        "BF.ADD",
+                        BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
+                        credHash.getBytes(StandardCharsets.UTF_8)
+                ));
+    }
+
+    private static String sha256Hex(String input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
     }
 }
