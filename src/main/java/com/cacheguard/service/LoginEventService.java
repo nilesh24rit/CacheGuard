@@ -1,20 +1,40 @@
 package com.cacheguard.service;
 
 import com.cacheguard.model.LoginRequest;
+import java.time.Instant;
+import java.util.Map;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Handles the persistence side of login attempts.
- * Initially just a stub – Redis Streams, HyperLogLog and Bloom filter
- * logic will be layered in by later commits.
+ * Persists login attempts into Redis Streams so downstream consumers
+ * can process them for anomaly detection.
  */
 @Service
 public class LoginEventService {
 
+    private static final String STREAM_PREFIX = "login:stream:";
+
+    private final StringRedisTemplate redisTemplate;
+
+    public LoginEventService(StringRedisTemplate redisTemplate) {
+        this.redisTemplate = redisTemplate;
+    }
+
     /**
-     * Record a single login attempt.  Will push to Redis Streams in a later commit.
+     * Push a login attempt event into the per-user Redis Stream.
+     *
+     * @param request the original login payload
+     * @param success whether authentication succeeded
      */
     public void recordAttempt(LoginRequest request, boolean success) {
-        // placeholder – wired up in the next commits
+        String key = STREAM_PREFIX + request.username();
+        Map<String, String> fields = Map.of(
+                "ip", request.ip() != null ? request.ip() : "unknown",
+                "deviceId", request.deviceId() != null ? request.deviceId() : "unknown",
+                "result", String.valueOf(success),
+                "timestamp", Instant.now().toString()
+        );
+        redisTemplate.opsForStream().add(key, fields);
     }
 }
