@@ -20,6 +20,7 @@ public class LoginEventService {
     private static final String STREAM_PREFIX = "login:stream:";
     private static final String HLL_PREFIX = "devices:hll:";
     private static final String BLOOM_KEY = "creds:bloom:attempts";
+    private static final String ACTIVE_USERS_KEY = "active:usernames";
 
     private final StringRedisTemplate redisTemplate;
 
@@ -63,6 +64,17 @@ public class LoginEventService {
                         BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
                         credHash.getBytes(StandardCharsets.UTF_8)
                 ));
+
+        // --- Track active username in a Redis Set ---
+        redisTemplate.opsForSet().add(ACTIVE_USERS_KEY, request.username());
+    }
+
+    /**
+     * Returns the set of usernames that have had recent login activity.
+     * Used by the scheduled worker to know which streams to scan.
+     */
+    public java.util.Set<String> getActiveUsernames() {
+        return redisTemplate.opsForSet().members(ACTIVE_USERS_KEY);
     }
 
     private static String sha256Hex(String input) {
