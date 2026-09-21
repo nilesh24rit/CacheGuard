@@ -9,6 +9,7 @@ public record LoginResult(
         boolean success,
         String username,
         String message,
-        Instant timestamp
+        Instant timestamp,
+        boolean requiresCaptcha
 ) {
 }
