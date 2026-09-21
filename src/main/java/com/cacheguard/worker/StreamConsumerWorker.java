@@ -1,8 +1,10 @@
 package com.cacheguard.worker;
 
+import com.cacheguard.config.RiskProperties;
 import com.cacheguard.model.AnomalySignal;
 import com.cacheguard.service.AnomalyDetectionService;
 import com.cacheguard.service.LoginEventService;
+import com.cacheguard.service.RiskService;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Logger;
@@ -26,15 +28,26 @@ public class StreamConsumerWorker {
 
     private static final String STREAM_PREFIX = "login:stream:";
 
+    // Points awarded when device count exceeds the threshold
+    private static final double DEVICE_THRESHOLD_POINTS = 25.0;
+    // Points awarded for a known credential pattern
+    private static final double CREDENTIAL_PATTERN_POINTS = 15.0;
+
     private final LoginEventService loginEventService;
     private final AnomalyDetectionService anomalyDetectionService;
+    private final RiskService riskService;
+    private final RiskProperties riskProperties;
     private final StringRedisTemplate redisTemplate;
 
     public StreamConsumerWorker(LoginEventService loginEventService,
                                 AnomalyDetectionService anomalyDetectionService,
+                                RiskService riskService,
+                                RiskProperties riskProperties,
                                 StringRedisTemplate redisTemplate) {
         this.loginEventService = loginEventService;
         this.anomalyDetectionService = anomalyDetectionService;
+        this.riskService = riskService;
+        this.riskProperties = riskProperties;
         this.redisTemplate = redisTemplate;
     }
 
@@ -64,10 +77,27 @@ public class StreamConsumerWorker {
                 // the most recent failed attempt's implied username context.
                 AnomalySignal signal = anomalyDetectionService.evaluate(username, deviceId);
 
+                // Accumulate risk score based on anomaly signals
+                if (signal.deviceCount() > riskProperties.deviceCountThreshold()) {
+                    riskService.updateRiskScore(username, DEVICE_THRESHOLD_POINTS);
+                    log.info(String.format(
+                            "[StreamWorker] user=%s device spike detected (%d > %d), +%d risk pts",
+                            username, signal.deviceCount(), riskProperties.deviceCountThreshold(),
+                            (int) DEVICE_THRESHOLD_POINTS));
+                }
+
+                if (signal.isKnownCredentialPattern()) {
+                    riskService.updateRiskScore(username, CREDENTIAL_PATTERN_POINTS);
+                    log.info(String.format(
+                            "[StreamWorker] user=%s known credential pattern, +%d risk pts",
+                            username, (int) CREDENTIAL_PATTERN_POINTS));
+                }
+
+                double currentRisk = riskService.getRiskScore(username);
                 log.info(String.format(
-                        "[StreamWorker] user=%s device=%s result=%s ts=%s | devices=%d knownCred=%b",
+                        "[StreamWorker] user=%s device=%s result=%s ts=%s | devices=%d knownCred=%b risk=%.1f",
                         username, deviceId, result, timestamp,
-                        signal.deviceCount(), signal.isKnownCredentialPattern()));
+                        signal.deviceCount(), signal.isKnownCredentialPattern(), currentRisk));
             }
         }
     }
