@@ -9,3 +9,12 @@ spring:
 
 server:
   port: 8080
+
+cacheguard:
+  risk:
+    # distinct devices before a risk-point bump is triggered
+    deviceCountThreshold: 3
+    # score ceiling for normal (allowed) login attempts
+    allowScoreMax: 30.0
+    # score ceiling above which a CAPTCHA challenge is required
+    captchaScoreMax: 60.0
