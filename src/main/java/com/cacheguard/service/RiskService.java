@@ -72,4 +72,14 @@ public class RiskService {
                 })
                 .toList();
     }
+
+    /**
+     * Number of members currently in the hotlist (ZCARD).
+     *
+     * @return hotlist size, 0 when the key does not exist
+     */
+    public long getHotlistSize() {
+        Long size = redisTemplate.opsForZSet().zCard(RISK_HOTLIST_KEY);
+        return size != null ? size : 0L;
+    }
 }
