@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CacheGuard Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
       --bg: #0f172a;
@@ -63,6 +64,13 @@
     td.value { font-variant-numeric: tabular-nums; font-weight: 600; }
     .error { color: #f87171; font-size: 0.85rem; }
     .empty { color: var(--muted); font-style: italic; }
+    .chart-wrap {
+      max-width: 720px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+    }
   </style>
 </head>
 <body>
@@ -83,6 +91,9 @@
   </table>
 
   <h2>Top risk scores</h2>
+  <div class="chart-wrap">
+    <canvas id="hotlist-chart" aria-label="Top 10 risk scores bar chart" role="img"></canvas>
+  </div>
   <table id="hotlist-table">
     <thead>
       <tr><th>#</th><th>Username</th><th>Score</th></tr>
@@ -96,6 +107,43 @@
 
   <script>
     var POLL_INTERVAL_MS = 3000;
+    var hotlistChart = null;
+
+    function renderChart(entries) {
+      var labels = entries.map(function (entry) { return entry.username; });
+      var scores = entries.map(function (entry) { return entry.score; });
+
+      if (hotlistChart) {
+        hotlistChart.data.labels = labels;
+        hotlistChart.data.datasets[0].data = scores;
+        hotlistChart.update();
+        return;
+      }
+
+      hotlistChart = new Chart(document.getElementById("hotlist-chart"), {
+        type: "bar",
+        data: {
+          labels: labels,
+          datasets: [{
+            label: "Risk score",
+            data: scores,
+            backgroundColor: "rgba(56, 189, 248, 0.6)",
+            borderColor: "rgba(56, 189, 248, 1)",
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { labels: { color: "#e2e8f0" } }
+          },
+          scales: {
+            x: { ticks: { color: "#94a3b8" }, grid: { color: "#334155" } },
+            y: { beginAtZero: true, ticks: { color: "#94a3b8" }, grid: { color: "#334155" } }
+          }
+        }
+      });
+    }
 
     function setError(message) {
       var box = document.getElementById("error-box");
@@ -138,7 +186,9 @@
 
         var hotlistRes = await fetch("/api/hotlist?top=10");
         if (!hotlistRes.ok) throw new Error("hotlist HTTP " + hotlistRes.status);
-        renderHotlist((await hotlistRes.json()).entries || []);
+        var entries = (await hotlistRes.json()).entries || [];
+        renderHotlist(entries);
+        renderChart(entries);
 
         setError(null);
         document.getElementById("last-updated").textContent =
