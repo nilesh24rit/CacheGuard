@@ -50,7 +50,7 @@ public class LoginEventService {
         String hllKey = HLL_PREFIX + request.username();
         String deviceId = request.deviceId() != null ? request.deviceId() : "unknown";
         redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection ->
-                connection.execute(
+                (Long) connection.execute(
                         "PFADD",
                         hllKey.getBytes(StandardCharsets.UTF_8),
                         deviceId.getBytes(StandardCharsets.UTF_8)
@@ -59,7 +59,7 @@ public class LoginEventService {
         // --- Bloom filter BF.ADD for credential hash ---
         String credHash = sha256Hex(request.username() + ":" + request.password());
         redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection ->
-                connection.execute(
+                (Long) connection.execute(
                         "BF.ADD",
                         BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
                         credHash.getBytes(StandardCharsets.UTF_8)

@@ -37,11 +37,11 @@ public class AnomalyDetectionService {
         // BF.EXISTS on the credential Bloom filter
         String credHash = sha256Hex(username + ":" + password);
         long exists = redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection -> {
-            Long result = connection.execute(
+            Object result = connection.execute(
                     "BF.EXISTS",
                     BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
                     credHash.getBytes(StandardCharsets.UTF_8));
-            return result != null ? result : 0L;
+            return result != null ? (Long) result : 0L;
         });
 
         return new AnomalySignal(deviceCount, exists == 1L);

@@ -62,7 +62,9 @@ public class StreamConsumerWorker {
             String streamKey = STREAM_PREFIX + username;
 
             // Read the latest 10 entries (most recent first)
-            var entries = redisTemplate.opsForStream().reverseRange(streamKey, 0, 9);
+            var entries = redisTemplate.<String, String>opsForStream().reverseRange(streamKey,
+                    org.springframework.data.domain.Range.unbounded(),
+                    org.springframework.data.redis.connection.Limit.limit().count(10));
             if (entries == null || entries.isEmpty()) {
                 continue;
             }
