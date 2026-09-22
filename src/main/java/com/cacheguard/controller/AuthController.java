@@ -5,6 +5,7 @@ import com.cacheguard.model.LoginRequest;
 import com.cacheguard.model.LoginResult;
 import com.cacheguard.service.LoginEventService;
 import com.cacheguard.service.RiskService;
+import com.cacheguard.service.StatsService;
 import jakarta.validation.Valid;
 import java.time.Instant;
 import java.util.Map;
@@ -34,13 +35,16 @@ public class AuthController {
     private final LoginEventService loginEventService;
     private final RiskService riskService;
     private final RiskProperties riskProperties;
+    private final StatsService statsService;
 
     public AuthController(LoginEventService loginEventService,
                           RiskService riskService,
-                          RiskProperties riskProperties) {
+                          RiskProperties riskProperties,
+                          StatsService statsService) {
         this.loginEventService = loginEventService;
         this.riskService = riskService;
         this.riskProperties = riskProperties;
+        this.statsService = statsService;
     }
 
     @PostMapping("/login")
@@ -49,6 +53,7 @@ public class AuthController {
 
         // Risk gate: block if score is above the hard limit
         if (riskScore >= riskProperties.captchaScoreMax()) {
+            statsService.incrementBlockedRequests();
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(Map.of(
                             "success", false,
@@ -60,6 +65,7 @@ public class AuthController {
 
         // Risk gate: require CAPTCHA if score is in the elevated range
         if (riskScore >= riskProperties.allowScoreMax()) {
+            statsService.incrementFlaggedLogins();
             LoginResult result = new LoginResult(
                     false,
                     request.username(),
