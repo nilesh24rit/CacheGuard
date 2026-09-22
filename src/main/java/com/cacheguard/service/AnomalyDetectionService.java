@@ -1,9 +1,11 @@
 package com.cacheguard.service;
 
+import com.cacheguard.config.ScalarCommandOutput;
 import com.cacheguard.model.AnomalySignal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import org.springframework.data.redis.connection.lettuce.LettuceConnection;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -34,15 +36,25 @@ public class AnomalyDetectionService {
             return count != null ? count : 0L;
         }).intValue();
 
-        // BF.EXISTS on the credential Bloom filter
+        // BF.EXISTS on the credential Bloom filter. BF.* is unknown to Spring
+        // Data Redis, so ScalarCommandOutput decodes the reply (integer under
+        // RESP2, boolean under RESP3). Template callbacks only expose the
+        // RedisConnection interface, which lacks that overload, so run the
+        // command on the raw LettuceConnection.
         String credHash = sha256Hex(username + ":" + password);
-        long exists = redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection -> {
-            Object result = connection.execute(
+        LettuceConnection rawConnection =
+                (LettuceConnection) redisTemplate.getConnectionFactory().getConnection();
+        long exists;
+        try {
+            Object result = rawConnection.execute(
                     "BF.EXISTS",
+                    new ScalarCommandOutput(),
                     BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
                     credHash.getBytes(StandardCharsets.UTF_8));
-            return result != null ? (Long) result : 0L;
-        });
+            exists = (result instanceof Number number) ? number.longValue() : 0L;
+        } finally {
+            rawConnection.close();
+        }
 
         return new AnomalySignal(deviceCount, exists == 1L);
     }

@@ -1,5 +1,6 @@
 package com.cacheguard.service;
 
+import com.cacheguard.config.ScalarCommandOutput;
 import com.cacheguard.model.LoginRequest;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -9,6 +10,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.data.redis.connection.lettuce.LettuceConnection;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -60,13 +62,22 @@ public class LoginEventService {
                 ));
 
         // --- Bloom filter BF.ADD for credential hash ---
+        // BF.* is unknown to Spring Data Redis, so the default byte-array
+        // output cannot decode its integer/boolean reply. Run it on the raw
+        // LettuceConnection with ScalarCommandOutput (template callbacks only
+        // expose the RedisConnection interface, which lacks that overload).
         String credHash = sha256Hex(request.username() + ":" + request.password());
-        redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection ->
-                (Long) connection.execute(
-                        "BF.ADD",
-                        BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
-                        credHash.getBytes(StandardCharsets.UTF_8)
-                ));
+        LettuceConnection rawConnection =
+                (LettuceConnection) redisTemplate.getConnectionFactory().getConnection();
+        try {
+            rawConnection.execute(
+                    "BF.ADD",
+                    new ScalarCommandOutput(),
+                    BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
+                    credHash.getBytes(StandardCharsets.UTF_8));
+        } finally {
+            rawConnection.close();
+        }
 
         // --- Track active username in a Redis Set ---
         redisTemplate.opsForSet().add(ACTIVE_USERS_KEY, request.username());
