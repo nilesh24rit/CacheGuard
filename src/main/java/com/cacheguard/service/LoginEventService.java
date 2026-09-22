@@ -5,6 +5,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -75,6 +78,38 @@ public class LoginEventService {
      */
     public java.util.Set<String> getActiveUsernames() {
         return redisTemplate.opsForSet().members(ACTIVE_USERS_KEY);
+    }
+
+    /**
+     * Read recent login events for a user from their Redis Stream
+     * using XRANGE, newest first.
+     *
+     * @param username target user
+     * @param limit    maximum number of events to return
+     * @return event maps with timestamp, ip, deviceId and result
+     */
+    public List<Map<String, Object>> getRecentEvents(String username, int limit) {
+        String streamKey = STREAM_PREFIX + username;
+
+        // XRANGE over the whole stream, then keep only the tail
+        var entries = redisTemplate.<String, String>opsForStream()
+                .range(streamKey, org.springframework.data.domain.Range.unbounded());
+        if (entries == null || entries.isEmpty()) {
+            return List.of();
+        }
+
+        int from = Math.max(0, entries.size() - limit);
+        List<Map<String, Object>> events = new ArrayList<>();
+        for (int i = entries.size() - 1; i >= from; i--) { // newest first
+            Map<String, String> body = entries.get(i).getValue();
+            Map<String, Object> event = new LinkedHashMap<>();
+            event.put("timestamp", body.getOrDefault("timestamp", "unknown"));
+            event.put("ip", body.getOrDefault("ip", "unknown"));
+            event.put("deviceId", body.getOrDefault("deviceId", "unknown"));
+            event.put("result", body.getOrDefault("result", "false"));
+            events.add(event);
+        }
+        return events;
     }
 
     private static String sha256Hex(String input) {
