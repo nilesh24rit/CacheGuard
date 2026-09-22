@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CacheGuard Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 2rem;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    h1 {
+      margin: 0 0 0.25rem;
+      font-size: 1.6rem;
+    }
+    h2 {
+      margin: 2rem 0 0.75rem;
+      font-size: 1.1rem;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    #last-updated {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    table {
+      width: 100%;
+      max-width: 720px;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 0.6rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: #263449;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tr:last-child td { border-bottom: none; }
+    td.metric { color: var(--muted); }
+    td.value { font-variant-numeric: tabular-nums; font-weight: 600; }
+    .error { color: #f87171; font-size: 0.85rem; }
+    .empty { color: var(--muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>CacheGuard Dashboard</h1>
+  <div id="last-updated">waiting for first poll&hellip;</div>
+
+  <h2>Stats</h2>
+  <table id="stats-table">
+    <thead>
+      <tr><th>Metric</th><th>Value</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="metric">Total requests</td><td class="value" id="stat-total">&ndash;</td></tr>
+      <tr><td class="metric">Blocked requests</td><td class="value" id="stat-blocked">&ndash;</td></tr>
+      <tr><td class="metric">Flagged logins</td><td class="value" id="stat-flagged">&ndash;</td></tr>
+      <tr><td class="metric">Hotlist size</td><td class="value" id="stat-hotlist">&ndash;</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Top risk scores</h2>
+  <table id="hotlist-table">
+    <thead>
+      <tr><th>#</th><th>Username</th><th>Score</th></tr>
+    </thead>
+    <tbody id="hotlist-body">
+      <tr><td colspan="3" class="empty">loading&hellip;</td></tr>
+    </tbody>
+  </table>
+
+  <p class="error" id="error-box" hidden></p>
+
+  <script>
+    var POLL_INTERVAL_MS = 3000;
+
+    function setError(message) {
+      var box = document.getElementById("error-box");
+      if (message) {
+        box.textContent = message;
+        box.hidden = false;
+      } else {
+        box.hidden = true;
+      }
+    }
+
+    function renderStats(stats) {
+      document.getElementById("stat-total").textContent = stats.totalRequests;
+      document.getElementById("stat-blocked").textContent = stats.blockedCount;
+      document.getElementById("stat-flagged").textContent = stats.flaggedCount;
+      document.getElementById("stat-hotlist").textContent = stats.hotlistSize;
+    }
+
+    function renderHotlist(entries) {
+      var body = document.getElementById("hotlist-body");
+      if (!entries.length) {
+        body.innerHTML = '<tr><td colspan="3" class="empty">no risky users yet</td></tr>';
+        return;
+      }
+      var rows = entries.map(function (entry, index) {
+        return "<tr>" +
+          "<td>" + (index + 1) + "</td>" +
+          "<td>" + entry.username + "</td>" +
+          "<td class='value'>" + entry.score + "</td>" +
+          "</tr>";
+      });
+      body.innerHTML = rows.join("");
+    }
+
+    async function poll() {
+      try {
+        var statsRes = await fetch("/api/stats");
+        if (!statsRes.ok) throw new Error("stats HTTP " + statsRes.status);
+        renderStats(await statsRes.json());
+
+        var hotlistRes = await fetch("/api/hotlist?top=10");
+        if (!hotlistRes.ok) throw new Error("hotlist HTTP " + hotlistRes.status);
+        renderHotlist((await hotlistRes.json()).entries || []);
+
+        setError(null);
+        document.getElementById("last-updated").textContent =
+          "last updated " + new Date().toLocaleTimeString();
+      } catch (err) {
+        setError("poll failed: " + err.message);
+      }
+    }
+
+    poll();
+    setInterval(poll, POLL_INTERVAL_MS);
+  </script>
+</body>
+</html>
