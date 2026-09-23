@@ -8,6 +8,7 @@ end to end.
 Modes:
     --normal    a few requests/sec from a handful of IPs to /api/health
     --attack    hundreds of requests/sec from one fixed IP to trigger 429s
+    --stuffing  one username hit from many fake deviceIds via /api/login
 
 Requirements:
     pip install requests
@@ -18,11 +19,13 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
 HEALTH_PATH = "/api/health"
+LOGIN_PATH = "/api/login"
 
 # A handful of "client" IPs for normal traffic.
 # TEST-NET-2 ranges (RFC 5737) are reserved for documentation/examples.
@@ -38,10 +41,15 @@ NORMAL_IPS = [
 # TEST-NET-3 range (RFC 5737), reserved for documentation/examples.
 ATTACK_IP = "203.0.113.10"
 
+# Default stuffing target: one account, one (wrong) guessed password.
+STUFF_USERNAME = "alice"
+STUFF_PASSWORD = "Spring2026!"  # attacker's guess, not a real password
+
 # Mode-specific default request counts and delays (seconds between requests).
 DEFAULTS = {
     "normal": (20, 0.3),
     "attack": (600, 0.002),
+    "stuffing": (40, 0.05),
 }
 
 
@@ -163,6 +171,78 @@ def run_attack(base_url: str, count: int, delay: float, ip: str,
     return 1
 
 
+def run_stuffing(base_url: str, count: int, delay: float,
+                 username: str, password: str) -> int:
+    """Simulate credential stuffing against POST /api/login.
+
+    One username and one guessed password are sprayed from many unique
+    fake deviceIds. Source IPs rotate through the TEST-NET-1 range so the
+    per-IP rate limiter never fires - detection has to come from the
+    per-user device anomaly (HyperLogLog) maintained by the app.
+    """
+    print(f"[stuffing] sending {count} login attempts for user '{username}'")
+    print(f"[stuffing] one password, {count} unique fake deviceIds, "
+          f"rotating fake IPs, delay={delay}s")
+
+    outcomes = {"invalid": 0, "captcha": 0, "locked": 0, "success": 0,
+                "rate-limited": 0, "other": 0}
+    status_counts: dict[int, int] = {}
+
+    with requests.Session() as session:
+        for i in range(count):
+            ip = f"192.0.2.{(i % 250) + 1}"
+            payload = {
+                "username": username,
+                "password": password,
+                "ip": ip,
+                "deviceId": f"device-{uuid.uuid4().hex[:16]}",
+            }
+            try:
+                resp = session.post(
+                    base_url + LOGIN_PATH,
+                    json=payload,
+                    headers={"X-Forwarded-For": ip},
+                    timeout=5,
+                )
+            except requests.exceptions.RequestException as exc:
+                print(f"[stuffing] request failed: {exc}")
+                print("[stuffing] aborting: is CacheGuard running? "
+                      "Start it with: docker compose up --build")
+                return 1
+            status_counts[resp.status_code] = \
+                status_counts.get(resp.status_code, 0) + 1
+
+            if resp.status_code == 403:
+                outcomes["locked"] += 1
+            elif resp.status_code == 429:
+                outcomes["rate-limited"] += 1
+            elif resp.status_code == 200:
+                try:
+                    body = resp.json()
+                except ValueError:
+                    outcomes["other"] += 1
+                else:
+                    if body.get("requiresCaptcha"):
+                        outcomes["captcha"] += 1
+                    elif body.get("success"):
+                        outcomes["success"] += 1
+                    else:
+                        outcomes["invalid"] += 1
+            else:
+                outcomes["other"] += 1
+            time.sleep(delay)
+
+    print(f"[stuffing] done -> {summarize(status_counts)}")
+    print("[stuffing] outcomes: "
+          + ", ".join(f"{k}: {v}" for k, v in outcomes.items() if v))
+    if outcomes["captcha"] or outcomes["locked"]:
+        print("[stuffing] the risk gate kicked in mid-attack "
+              "(CAPTCHA/lock) while the risk score was climbing")
+    print("[stuffing] the anomaly worker scans login events every 5s; "
+          "GET /api/hotlist shows the flagged usernames")
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="CacheGuard load-test / demo script.",
@@ -180,6 +260,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="simulate a rate-limit attack: hundreds of requests/sec from one fixed IP",
     )
+    mode.add_argument(
+        "--stuffing",
+        action="store_true",
+        help="simulate credential stuffing: one username/password sprayed from many fake deviceIds via /api/login",
+    )
     parser.add_argument(
         "--ip",
         default=ATTACK_IP,
@@ -190,6 +275,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=8,
         help="concurrent request threads used by --attack",
+    )
+    parser.add_argument(
+        "--username",
+        default=STUFF_USERNAME,
+        help="target account for --stuffing",
+    )
+    parser.add_argument(
+        "--password",
+        default=STUFF_PASSWORD,
+        help="guessed password for --stuffing",
     )
 
     parser.add_argument(
@@ -217,39 +312,39 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     if args.normal:
-        count, delay = DEFAULTS["normal"]
-        if args.count is not None:
-            count = args.count
-        if args.delay is not None:
-            delay = args.delay
-        if count < 1:
-            print("[error] --count must be >= 1")
-            return 2
-        if delay < 0:
-            print("[error] --delay must be >= 0")
-            return 2
-        return run_normal(args.url.rstrip("/"), count, delay)
+        mode = "normal"
+    elif args.attack:
+        mode = "attack"
+    elif args.stuffing:
+        mode = "stuffing"
+    else:
+        print("[error] no mode selected")
+        return 2
 
-    if args.attack:
-        count, delay = DEFAULTS["attack"]
-        if args.count is not None:
-            count = args.count
-        if args.delay is not None:
-            delay = args.delay
-        if count < 1:
-            print("[error] --count must be >= 1")
-            return 2
-        if delay < 0:
-            print("[error] --delay must be >= 0")
-            return 2
+    count, delay = DEFAULTS[mode]
+    if args.count is not None:
+        count = args.count
+    if args.delay is not None:
+        delay = args.delay
+    if count < 1:
+        print("[error] --count must be >= 1")
+        return 2
+    if delay < 0:
+        print("[error] --delay must be >= 0")
+        return 2
+
+    base_url = args.url.rstrip("/")
+
+    if mode == "normal":
+        return run_normal(base_url, count, delay)
+
+    if mode == "attack":
         if args.workers < 1:
             print("[error] --workers must be >= 1")
             return 2
-        return run_attack(args.url.rstrip("/"), count, delay, args.ip,
-                          args.workers)
+        return run_attack(base_url, count, delay, args.ip, args.workers)
 
-    print("[error] no mode selected")
-    return 2
+    return run_stuffing(base_url, count, delay, args.username, args.password)
 
 
 if __name__ == "__main__":
