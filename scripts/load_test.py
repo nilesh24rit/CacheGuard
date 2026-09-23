@@ -26,6 +26,7 @@ import requests
 
 HEALTH_PATH = "/api/health"
 LOGIN_PATH = "/api/login"
+HOTLIST_PATH = "/api/hotlist"
 
 # A handful of "client" IPs for normal traffic.
 # TEST-NET-2 ranges (RFC 5737) are reserved for documentation/examples.
@@ -243,6 +244,54 @@ def run_stuffing(base_url: str, count: int, delay: float,
     return 0
 
 
+def check_hotlist(base_url: str, username: str, top: int, wait: float) -> int:
+    """Query GET /api/hotlist and print the top flagged usernames.
+
+    Proves detection worked end to end: after the stuffing run the
+    anomaly worker scores the targeted account, so it must show up on
+    the global risk hotlist.
+    """
+    print(f"[stuffing] waiting {wait:g}s for the anomaly worker "
+          "(it polls every 5s)...")
+    time.sleep(wait)
+
+    try:
+        resp = requests.get(base_url + HOTLIST_PATH,
+                            params={"top": top}, timeout=5)
+    except requests.exceptions.RequestException as exc:
+        print(f"[stuffing] hotlist request failed: {exc}")
+        return 1
+    if resp.status_code != 200:
+        print(f"[stuffing] GET {HOTLIST_PATH} returned {resp.status_code}")
+        return 1
+    try:
+        data = resp.json()
+    except ValueError:
+        print(f"[stuffing] GET {HOTLIST_PATH} did not return JSON")
+        return 1
+
+    entries = data.get("entries", [])
+    print(f"[stuffing] GET {HOTLIST_PATH}?top={top} -> {len(entries)} "
+          "entries (top flagged usernames)")
+    if not entries:
+        print("[stuffing] hotlist is empty - detection flagged nobody; "
+              "try a larger --count")
+        return 1
+    for i, entry in enumerate(entries, 1):
+        marker = ("  <-- stuffed account"
+                  if entry.get("username") == username else "")
+        print(f"  #{i} {str(entry.get('username', '?')):<20} "
+              f"score={entry.get('score')}{marker}")
+
+    if any(entry.get("username") == username for entry in entries):
+        print(f"[stuffing] OK: '{username}' is on the hotlist - "
+              "anomaly detection flagged the stuffing attempt")
+        return 0
+    print(f"[stuffing] WARNING: '{username}' is not on the hotlist yet - "
+          "try a larger --count or a longer --wait")
+    return 1
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="CacheGuard load-test / demo script.",
@@ -285,6 +334,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--password",
         default=STUFF_PASSWORD,
         help="guessed password for --stuffing",
+    )
+    parser.add_argument(
+        "--wait",
+        type=float,
+        default=7.0,
+        help="seconds to wait after --stuffing before querying /api/hotlist (worker ticks every 5s)",
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="number of hotlist entries to fetch after --stuffing",
     )
 
     parser.add_argument(
@@ -344,7 +405,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return run_attack(base_url, count, delay, args.ip, args.workers)
 
-    return run_stuffing(base_url, count, delay, args.username, args.password)
+    rc = run_stuffing(base_url, count, delay, args.username, args.password)
+    if rc != 0:
+        return rc
+
+    # Prove detection: fetch the hotlist ourselves and flag our target.
+    if args.wait < 0:
+        print("[error] --wait must be >= 0")
+        return 2
+    if args.top < 1:
+        print("[error] --top must be >= 1")
+        return 2
+    return check_hotlist(base_url, args.username, args.top, args.wait)
 
 
 if __name__ == "__main__":
