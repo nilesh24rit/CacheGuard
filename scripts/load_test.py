@@ -7,6 +7,7 @@ end to end.
 
 Modes:
     --normal    a few requests/sec from a handful of IPs to /api/health
+    --attack    hundreds of requests/sec from one fixed IP to trigger 429s
 
 Requirements:
     pip install requests
@@ -17,6 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -32,9 +34,14 @@ NORMAL_IPS = [
     "198.51.100.5",
 ]
 
+# A single fixed "attacker" IP for the rate-limit attack.
+# TEST-NET-3 range (RFC 5737), reserved for documentation/examples.
+ATTACK_IP = "203.0.113.10"
+
 # Mode-specific default request counts and delays (seconds between requests).
 DEFAULTS = {
     "normal": (20, 0.3),
+    "attack": (600, 0.002),
 }
 
 
@@ -89,6 +96,73 @@ def run_normal(base_url: str, count: int, delay: float) -> int:
     return 1
 
 
+def run_attack(base_url: str, count: int, delay: float, ip: str,
+               workers: int) -> int:
+    """Hammer /api/health from one fixed IP until the rate limiter kicks in.
+
+    The gateway allows 200 requests per 60s window per IP+endpoint, so a
+    burst of several hundred requests from a single IP should produce a
+    mix of 200 and 429 responses. Requests are spread over several
+    threads so the attack genuinely reaches hundreds of req/s.
+    Prints the 200 vs 429 summary.
+    """
+    print(f"[attack] sending {count} requests to {HEALTH_PATH} from fixed IP {ip}")
+    print(f"[attack] {workers} workers, delay={delay}s per request")
+
+    # Round-robin partition of request indices; each worker keeps its own
+    # Session (connection pooling) so requests overlap in flight.
+    chunks: list[list[int]] = [[] for _ in range(workers)]
+    for i in range(count):
+        chunks[i % workers].append(i)
+
+    def worker_run(indices: list[int]) -> list[int | None]:
+        statuses: list[int | None] = []
+        with requests.Session() as session:
+            for _ in indices:
+                status = send_get(session, base_url + HEALTH_PATH, ip)
+                statuses.append(status)
+                if status is None:  # connection error -> stop this worker
+                    break
+                if delay > 0:
+                    time.sleep(delay)
+        return statuses
+
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(worker_run, chunks))
+    elapsed = time.perf_counter() - started
+
+    statuses_flat = [s for chunk in results for s in chunk]
+    if None in statuses_flat:
+        print("[attack] aborting: is CacheGuard running? "
+              "Start it with: docker compose up --build")
+        return 1
+
+    status_counts: dict[int, int] = {}
+    for status in statuses_flat:
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    sent = len(statuses_flat)
+    ok = status_counts.get(200, 0)
+    rate_limited = status_counts.get(429, 0)
+    other = sent - ok - rate_limited
+
+    print(f"[attack] finished {sent} requests in {elapsed:.1f}s "
+          f"(~{sent / elapsed:.0f} req/s)")
+    print(f"[attack] 200 OK:           {ok}")
+    print(f"[attack] 429 rate-limited: {rate_limited}")
+    if other:
+        print(f"[attack] other:           {other} -> {summarize(status_counts)}")
+
+    if rate_limited > 0:
+        print(f"[attack] OK: rate limiting is working: "
+              f"{rate_limited} of {sent} requests were blocked with 429")
+        return 0
+    print("[attack] WARNING: no 429s seen - the limit is 200 requests per "
+          "60s per IP+endpoint; raise --count above that")
+    return 1
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="CacheGuard load-test / demo script.",
@@ -100,6 +174,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--normal",
         action="store_true",
         help="simulate benign traffic: a few requests/sec from a handful of IPs to /api/health",
+    )
+    mode.add_argument(
+        "--attack",
+        action="store_true",
+        help="simulate a rate-limit attack: hundreds of requests/sec from one fixed IP",
+    )
+    parser.add_argument(
+        "--ip",
+        default=ATTACK_IP,
+        help="fixed source IP used by --attack (rate-limit key; wait 60s or change it to reset the window)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="concurrent request threads used by --attack",
     )
 
     parser.add_argument(
@@ -139,6 +229,24 @@ def main(argv: list[str] | None = None) -> int:
             print("[error] --delay must be >= 0")
             return 2
         return run_normal(args.url.rstrip("/"), count, delay)
+
+    if args.attack:
+        count, delay = DEFAULTS["attack"]
+        if args.count is not None:
+            count = args.count
+        if args.delay is not None:
+            delay = args.delay
+        if count < 1:
+            print("[error] --count must be >= 1")
+            return 2
+        if delay < 0:
+            print("[error] --delay must be >= 0")
+            return 2
+        if args.workers < 1:
+            print("[error] --workers must be >= 1")
+            return 2
+        return run_attack(args.url.rstrip("/"), count, delay, args.ip,
+                          args.workers)
 
     print("[error] no mode selected")
     return 2
