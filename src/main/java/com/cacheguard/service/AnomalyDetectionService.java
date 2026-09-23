@@ -1,23 +1,24 @@
 package com.cacheguard.service;
 
-import com.cacheguard.config.ScalarCommandOutput;
 import com.cacheguard.model.AnomalySignal;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import org.springframework.data.redis.connection.lettuce.LettuceConnection;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Reads the per-user HyperLogLog and the global credential Bloom filter
- * to produce a simple {@link AnomalySignal}.
+ * Reads the per-user device HyperLogLog to produce an {@link AnomalySignal}.
+ *
+ * <p>The credential side of the signal - "was this username:password pair
+ * already known?" - is decided once, at record time, by
+ * {@link LoginEventService} (from the BF.ADD reply) and travels with the
+ * stream event as its {@code knownCredential} field. Re-checking the Bloom
+ * filter here, after the hash has been stored, would always report
+ * "known", and the worker never has the plaintext password anyway.</p>
  */
 @Service
 public class AnomalyDetectionService {
 
     private static final String HLL_PREFIX = "devices:hll:";
-    private static final String BLOOM_KEY = "creds:bloom:attempts";
 
     private final StringRedisTemplate redisTemplate;
 
@@ -26,50 +27,23 @@ public class AnomalyDetectionService {
     }
 
     /**
-     * Run PFCOUNT on the user's device HLL and BF.EXISTS on the
-     * credential Bloom filter for the given username+password pair.
+     * Run PFCOUNT on the user's device HyperLogLog and combine the device
+     * count with the record-time known-credential verdict carried by the
+     * event.
+     *
+     * @param username        target user
+     * @param knownCredential true when this event's credential had already
+     *                        been seen before the attempt was recorded
+     * @return anomaly signal for this event
      */
-    public AnomalySignal evaluate(String username, String password) {
-        // PFCOUNT on the per-user HyperLogLog
-        int deviceCount = redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection -> {
-            Long count = connection.pfCount((HLL_PREFIX + username).getBytes(StandardCharsets.UTF_8));
-            return count != null ? count : 0L;
-        }).intValue();
+    public AnomalySignal evaluate(String username, boolean knownCredential) {
+        int deviceCount = redisTemplate.execute(
+                (org.springframework.data.redis.core.RedisCallback<Long>) connection -> {
+                    Long count = connection.pfCount(
+                            (HLL_PREFIX + username).getBytes(StandardCharsets.UTF_8));
+                    return count != null ? count : 0L;
+                }).intValue();
 
-        // BF.EXISTS on the credential Bloom filter. BF.* is unknown to Spring
-        // Data Redis, so ScalarCommandOutput decodes the reply (integer under
-        // RESP2, boolean under RESP3). Template callbacks only expose the
-        // RedisConnection interface, which lacks that overload, so run the
-        // command on the raw LettuceConnection.
-        String credHash = sha256Hex(username + ":" + password);
-        LettuceConnection rawConnection =
-                (LettuceConnection) redisTemplate.getConnectionFactory().getConnection();
-        long exists;
-        try {
-            Object result = rawConnection.execute(
-                    "BF.EXISTS",
-                    new ScalarCommandOutput(),
-                    BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
-                    credHash.getBytes(StandardCharsets.UTF_8));
-            exists = (result instanceof Number number) ? number.longValue() : 0L;
-        } finally {
-            rawConnection.close();
-        }
-
-        return new AnomalySignal(deviceCount, exists == 1L);
-    }
-
-    private static String sha256Hex(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(hash.length * 2);
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 not available", e);
-        }
+        return new AnomalySignal(deviceCount, knownCredential);
     }
 }

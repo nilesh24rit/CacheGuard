@@ -84,7 +84,7 @@ Defaults: 600 requests, 8 worker threads, 0.002 s delay per request.
 ```
 [attack] sending 600 requests to /api/health from fixed IP 203.0.113.10
 [attack] 8 workers, delay=0.002s per request
-[attack] finished 600 requests in 3.1s (~197 req/s)
+[attack] finished 600 requests in 2.3s (~265 req/s)
 [attack] 200 OK:           200
 [attack] 429 rate-limited: 400
 [attack] OK: rate limiting is working: 400 of 600 requests were blocked with 429
@@ -125,12 +125,13 @@ the top 10 hotlist entries.
 ```
 [stuffing] sending 40 login attempts for user 'alice'
 [stuffing] one password, 40 unique fake deviceIds, rotating fake IPs, delay=0.05s
-[stuffing] done -> 200: 40
-[stuffing] outcomes: invalid: 40
+[stuffing] done -> 200: 23, 403: 17
+[stuffing] outcomes: invalid: 23, locked: 17
+[stuffing] the risk gate kicked in mid-attack (CAPTCHA/lock) while the risk score was climbing
 [stuffing] the anomaly worker scans login events every 5s; GET /api/hotlist shows the flagged usernames
 [stuffing] waiting 7s for the anomaly worker (it polls every 5s)...
 [stuffing] GET /api/hotlist?top=10 -> 1 entries (top flagged usernames)
-  #1 alice                score=500.0  <-- stuffed account
+  #1 alice                score=905.0  <-- stuffed account
 [stuffing] OK: 'alice' is on the hotlist - anomaly detection flagged the stuffing attempt
 ```
 
@@ -138,13 +139,15 @@ Exit code `0` only when the targeted username appears on the hotlist.
 
 Notes:
 
-- Exact scores vary (they depend on how many attempts were recorded before a
-  worker tick); what matters is that the account is flagged with a non-zero
-  score.
-- Depending on when the 5-second worker tick lands, later attempts in the run
-  may already come back as `CAPTCHA verification required` or `403 Account
-  locked` - that is the risk gate reacting to the climbing score, which is
-  part of the demo.
+- The split between `invalid` responses and `CAPTCHA`/`403` rejections, and
+  the final score, depend on where the 5-second worker tick lands relative to
+  the run (e.g. 23 recorded attempts score 23x25 device + 22x15 repeat-
+  credential = 905 points). What matters is that the account is flagged with
+  a non-zero score, and that the score then stays put - each stream event is
+  scored exactly once.
+- Later attempts in a run may already come back as
+  `CAPTCHA verification required` or `403 Account locked` - that is the risk
+  gate reacting to the climbing score, which is part of the demo.
 - The app also logs each detection, e.g.
   `[StreamWorker] user=alice device spike detected (40 > 3), +25 risk pts`.
 - `GET /api/events/alice` shows the raw login stream if you want to inspect

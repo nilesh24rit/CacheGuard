@@ -37,17 +37,50 @@ public class LoginEventService {
      * Push a login attempt event into the per-user Redis Stream
      * and register the device in the user's HyperLogLog.
      *
+     * <p>Also adds the username:password hash to the global credential
+     * Bloom filter and records, as the {@code knownCredential} stream
+     * field, whether that hash had already been seen before this attempt
+     * (BF.ADD replies 0 when the item was already present).</p>
+     *
      * @param request the original login payload
      * @param success whether authentication succeeded
      */
     public void recordAttempt(LoginRequest request, boolean success) {
+        // --- Bloom filter BF.ADD for credential hash ---
+        // BF.* is unknown to Spring Data Redis, so the default byte-array
+        // output cannot decode its integer/boolean reply. Run it on the raw
+        // LettuceConnection with ScalarCommandOutput (template callbacks only
+        // expose the RedisConnection interface, which lacks that overload).
+        // BF.ADD replies 1 when the hash was newly added and 0 when it was
+        // already present, so the reply itself tells us whether this exact
+        // username:password pair had been seen before this attempt - the
+        // "known credential" verdict the worker consumes later. It must be
+        // taken here, before the hash is stored: checking the filter after
+        // the add would always report "known".
+        String credHash = sha256Hex(request.username() + ":" + request.password());
+        LettuceConnection rawConnection =
+                (LettuceConnection) redisTemplate.getConnectionFactory().getConnection();
+        boolean knownCredential;
+        try {
+            Object reply = rawConnection.execute(
+                    "BF.ADD",
+                    new ScalarCommandOutput(),
+                    BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
+                    credHash.getBytes(StandardCharsets.UTF_8));
+            knownCredential = (reply instanceof Number number)
+                    && number.longValue() == 0L;
+        } finally {
+            rawConnection.close();
+        }
+
         // --- Redis Stream XADD ---
         String streamKey = STREAM_PREFIX + request.username();
         Map<String, String> fields = Map.of(
                 "ip", request.ip() != null ? request.ip() : "unknown",
                 "deviceId", request.deviceId() != null ? request.deviceId() : "unknown",
                 "result", String.valueOf(success),
-                "timestamp", Instant.now().toString()
+                "timestamp", Instant.now().toString(),
+                "knownCredential", String.valueOf(knownCredential)
         );
         redisTemplate.opsForStream().add(streamKey, fields);
 
@@ -60,24 +93,6 @@ public class LoginEventService {
                         hllKey.getBytes(StandardCharsets.UTF_8),
                         deviceId.getBytes(StandardCharsets.UTF_8)
                 ));
-
-        // --- Bloom filter BF.ADD for credential hash ---
-        // BF.* is unknown to Spring Data Redis, so the default byte-array
-        // output cannot decode its integer/boolean reply. Run it on the raw
-        // LettuceConnection with ScalarCommandOutput (template callbacks only
-        // expose the RedisConnection interface, which lacks that overload).
-        String credHash = sha256Hex(request.username() + ":" + request.password());
-        LettuceConnection rawConnection =
-                (LettuceConnection) redisTemplate.getConnectionFactory().getConnection();
-        try {
-            rawConnection.execute(
-                    "BF.ADD",
-                    new ScalarCommandOutput(),
-                    BLOOM_KEY.getBytes(StandardCharsets.UTF_8),
-                    credHash.getBytes(StandardCharsets.UTF_8));
-        } finally {
-            rawConnection.close();
-        }
 
         // --- Track active username in a Redis Set ---
         redisTemplate.opsForSet().add(ACTIVE_USERS_KEY, request.username());

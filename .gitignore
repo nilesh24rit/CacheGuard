@@ -24,3 +24,7 @@ Thumbs.db
 *.ear
 hs_err_pid*
 replay_pid*
+
+# Python demo scripts
+__pycache__/
+*.pyc
