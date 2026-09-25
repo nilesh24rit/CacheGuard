@@ -76,6 +76,19 @@ Request -> RateLimiterFilter -> Redis Sliding-Window (Lua)
    `allowScoreMax` a CAPTCHA challenge is required, at or above
    `captchaScoreMax` the attempt is blocked outright with `403`.
 
+## Redis Key Schema
+
+| Key pattern | Type | Purpose | TTL |
+|---|---|---|---|
+| `ratelimit:{ip}:{endpoint}` | Sorted set | Sliding-window rate-limit counter: one member per request scored by timestamp; the Lua script prunes entries older than the window and returns the live count (limit 200 per 60 s) | 60 s, refreshed on every request |
+| `login:stream:{username}` | Stream | Per-user login-attempt events (`ip`, `deviceId`, `result`, `timestamp`, `knownCredential`) written with `XADD`, drained by the anomaly worker | none (persistent) |
+| `devices:hll:{username}` | HyperLogLog | Approximate set of distinct device ids per user; `PFCOUNT` above `cacheguard.risk.deviceCountThreshold` awards device-spike risk points | none (persistent) |
+| `creds:bloom:attempts` | Bloom filter (RedisBloom) | SHA-256 hashes of every submitted `username:password` pair; the `BF.ADD` reply (0 = already present) produces the record-time known-credential verdict | none (persistent) |
+| `risk:hotlist` | Sorted set | Global risk score per username (`ZINCRBY`); read by the login risk gate and by `GET /api/hotlist` | none (persistent) |
+| `active:usernames` | Set | Users with recorded login activity; tells the worker which streams to scan | none (persistent) |
+| `worker:lastid:{username}` | String | Per-user cursor: ID of the last stream entry that was scored, so each event contributes points exactly once | none (persistent) |
+| `stats:requests:total`, `stats:requests:blocked`, `stats:logins:flagged` | String (counter) | Monotonic `INCR` counters served by `GET /api/stats` and the dashboard | none (persistent) |
+
 ## Tech stack
 
 | Layer | Technology |
