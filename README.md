@@ -125,3 +125,78 @@ Redis connection settings live in `src/main/resources/application.yml`:
 
 Risk-scoring thresholds live under `cacheguard.risk.*` - see the commented
 `application.yml` for details.
+
+## How to Run
+
+### 1. Start the full stack with Docker Compose
+
+```bash
+docker compose up --build
+```
+
+This starts:
+
+- `cacheguard-redis` - Redis Stack on `6379` (RedisInsight on `8001`)
+- `cacheguard-app` - the Spring Boot application on `8080`
+
+Verify it is up:
+
+```bash
+curl http://localhost:8080/api/health   # -> OK
+```
+
+### 2. Or run the app with Maven (local development)
+
+Start Redis Stack first, then run the app directly:
+
+```bash
+docker compose up -d redis
+mvn spring-boot:run
+```
+
+The app connects to `localhost:6379` by default; override with the
+`REDIS_HOST`, `REDIS_PORT` and `REDIS_TIMEOUT` environment variables.
+
+### 3. Run the demo scripts
+
+Install the dependency once, then drive each mode independently
+(see [`scripts/README.md`](scripts/README.md) for all options):
+
+```bash
+python -m pip install requests
+
+# Benign traffic: a few requests/sec from several IPs - all 200s
+python scripts/load_test.py --normal
+
+# Flood: hundreds of requests/sec from one fixed IP - 200s then 429s
+python scripts/load_test.py --attack
+
+# Credential stuffing, followed by an automatic GET /api/hotlist proof
+python scripts/load_test.py --stuffing
+```
+
+Expected outcome: `--normal` reports only `200`s; `--attack` reports the
+first 200 requests as `200 OK` and the remainder as `429 rate-limited`;
+`--stuffing` waits for the anomaly worker, fetches the hotlist itself and
+prints the top flagged usernames with the stuffed account marked.
+
+### Useful endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/health` | Redis `PING` health check |
+| `GET /api/stats` | Total/blocked/flagged counters + hotlist size |
+| `GET /api/hotlist?top=N` | Top riskiest usernames |
+| `GET /api/risk/{username}` | Risk score for a single user |
+| `GET /api/events/{username}` | Recent login events for a user |
+| `GET /dashboard.html` | Live dashboard (Chart.js) |
+
+### Run the tests
+
+```bash
+mvn test
+```
+
+Tests start a Redis container through Testcontainers when Docker is
+available, otherwise they fall back to a Redis already running on
+`localhost:6379`; without any Redis they skip themselves.
