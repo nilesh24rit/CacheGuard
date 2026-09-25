@@ -7,6 +7,11 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
+/**
+ * Registers the Redis beans used across the application: a string-only
+ * {@link RedisTemplate} (rate-limiter Lua script, streams, sets) and the
+ * {@link StringRedisTemplate} consumed by the services.
+ */
 @Configuration
 public class RedisConfig {
 

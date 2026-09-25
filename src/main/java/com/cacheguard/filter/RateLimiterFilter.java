@@ -8,7 +8,6 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.Map;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -36,6 +35,16 @@ public class RateLimiterFilter extends OncePerRequestFilter {
         this.statsService = statsService;
     }
 
+    /**
+     * Count the request, run the sliding-window check and either reject
+     * with {@code 429} or pass the call on down the filter chain.
+     *
+     * @param request       current HTTP request
+     * @param response      current HTTP response
+     * @param filterChain   remaining filter chain / target servlet
+     * @throws ServletException container error
+     * @throws IOException      I/O error while writing the response
+     */
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,

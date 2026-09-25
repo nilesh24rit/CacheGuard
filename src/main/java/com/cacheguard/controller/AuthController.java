@@ -47,6 +47,17 @@ public class AuthController {
         this.statsService = statsService;
     }
 
+    /**
+     * Risk gate, then simulated credential check, then event recording.
+     *
+     * <p>Scores at or above {@code captchaScoreMax} are rejected with
+     * {@code 403}; scores at or above {@code allowScoreMax} answer with a
+     * CAPTCHA challenge; only lower scores reach credential validation and
+     * {@link LoginEventService#recordAttempt}.</p>
+     *
+     * @param request validated login payload (username, password, ip, deviceId)
+     * @return {@code 200} with a {@link LoginResult}, or {@code 403} when blocked
+     */
     @PostMapping("/login")
     public ResponseEntity<?> login(@Valid @RequestBody LoginRequest request) {
         double riskScore = riskService.getRiskScore(request.username());

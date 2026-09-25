@@ -2,6 +2,7 @@ package com.cacheguard.service;
 
 import com.cacheguard.model.AnomalySignal;
 import java.nio.charset.StandardCharsets;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -38,7 +39,7 @@ public class AnomalyDetectionService {
      */
     public AnomalySignal evaluate(String username, boolean knownCredential) {
         int deviceCount = redisTemplate.execute(
-                (org.springframework.data.redis.core.RedisCallback<Long>) connection -> {
+                (RedisCallback<Long>) connection -> {
                     Long count = connection.pfCount(
                             (HLL_PREFIX + username).getBytes(StandardCharsets.UTF_8));
                     return count != null ? count : 0L;

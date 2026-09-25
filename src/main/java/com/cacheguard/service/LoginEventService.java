@@ -10,7 +10,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.lettuce.LettuceConnection;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -87,7 +90,7 @@ public class LoginEventService {
         // --- HyperLogLog PFADD (raw command via execute) ---
         String hllKey = HLL_PREFIX + request.username();
         String deviceId = request.deviceId() != null ? request.deviceId() : "unknown";
-        redisTemplate.execute((org.springframework.data.redis.core.RedisCallback<Long>) connection ->
+        redisTemplate.execute((RedisCallback<Long>) connection ->
                 (Long) connection.execute(
                         "PFADD",
                         hllKey.getBytes(StandardCharsets.UTF_8),
@@ -101,8 +104,11 @@ public class LoginEventService {
     /**
      * Returns the set of usernames that have had recent login activity.
      * Used by the scheduled worker to know which streams to scan.
+     *
+     * @return usernames present in the {@code active:usernames} set,
+     *         or {@code null} when the key does not exist
      */
-    public java.util.Set<String> getActiveUsernames() {
+    public Set<String> getActiveUsernames() {
         return redisTemplate.opsForSet().members(ACTIVE_USERS_KEY);
     }
 
@@ -119,7 +125,7 @@ public class LoginEventService {
 
         // XRANGE over the whole stream, then keep only the tail
         var entries = redisTemplate.<String, String>opsForStream()
-                .range(streamKey, org.springframework.data.domain.Range.unbounded());
+                .range(streamKey, Range.unbounded());
         if (entries == null || entries.isEmpty()) {
             return List.of();
         }

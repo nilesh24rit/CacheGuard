@@ -8,6 +8,7 @@ import com.cacheguard.service.RiskService;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Logger;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -58,6 +59,10 @@ public class StreamConsumerWorker {
         this.redisTemplate = redisTemplate;
     }
 
+    /**
+     * Scheduled every 5 seconds: drain and score any login events that
+     * arrived since this user's cursor, then advance the cursor.
+     */
     @Scheduled(fixedRate = 5000)
     public void pollStreams() {
         Set<String> activeUsers = loginEventService.getActiveUsernames();
@@ -73,7 +78,7 @@ public class StreamConsumerWorker {
             // Read the whole stream oldest-first so the cursor only moves
             // forward; already-scored entries are skipped below.
             var entries = redisTemplate.<String, String>opsForStream()
-                    .range(streamKey, org.springframework.data.domain.Range.unbounded());
+                    .range(streamKey, Range.unbounded());
             if (entries == null || entries.isEmpty()) {
                 continue;
             }
