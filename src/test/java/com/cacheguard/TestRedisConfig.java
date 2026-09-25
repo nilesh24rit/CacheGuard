@@ -17,9 +17,13 @@ import org.testcontainers.utility.DockerImageName;
  * The winning host/port is exposed via {@link DynamicPropertySource} so
  * every {@code @SpringBootTest} in this module picks them up automatically.
  * <p>
- * Set the system property {@code cacheguard.redis.available=true} (done
- * automatically by this class) so tests can skip themselves when no Redis
- * is reachable at all.
+ * The static initializer also sets the system property
+ * {@code cacheguard.redis.available=true}. Tests gate themselves with
+ * {@code @EnabledIf("com.cacheguard.TestRedisConfig#isRedisAvailable")}:
+ * JUnit must invoke that method to decide whether to run them, which
+ * forces this class to initialize (probe first, property set) <em>before</em>
+ * the condition is evaluated. Relying on the system property alone would
+ * be circular — Spring only loads this class after the condition passed.
  */
 @Configuration
 public class TestRedisConfig {
@@ -64,6 +68,18 @@ public class TestRedisConfig {
         registry.add("spring.data.redis.host", () -> REDIS_HOST);
         registry.add("spring.data.redis.port", () -> REDIS_PORT);
         registry.add(REDIS_AVAILABLE_PROPERTY, () -> REDIS_HOST != null);
+    }
+
+    /**
+     * Whether the probe above discovered a usable Redis server.
+     * Referenced by the tests' {@code @EnabledIf} condition; the act of
+     * calling it triggers the static initializer, so the Docker/localhost
+     * probe always runs before JUnit decides to execute or skip the tests.
+     *
+     * @return {@code true} when a Redis host was found
+     */
+    public static boolean isRedisAvailable() {
+        return REDIS_HOST != null;
     }
 
     /** Quick TCP probe — returns {@code true} if the port accepts a connection. */

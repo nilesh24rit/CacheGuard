@@ -7,7 +7,7 @@ import com.cacheguard.service.RateLimiterService;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -18,10 +18,12 @@ import org.springframework.data.redis.core.StringRedisTemplate;
  * than the configured maximum and asserts that the very next request is
  * rejected with {@code allowed == false}.
  * <p>
- * Skipped automatically when no Redis server is reachable.
+ * Skipped automatically when no Redis server is reachable: the condition
+ * below invokes {@link TestRedisConfig#isRedisAvailable()}, which forces the
+ * Redis probe to run before the skip/run decision is made.
  */
 @SpringBootTest
-@EnabledIfSystemProperty(named = "cacheguard.redis.available", matches = "true")
+@EnabledIf("com.cacheguard.TestRedisConfig#isRedisAvailable")
 class RateLimiterServiceTest {
 
     private static final int MAX_REQUESTS = 3;

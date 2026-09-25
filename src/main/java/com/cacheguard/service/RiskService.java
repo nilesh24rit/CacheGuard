@@ -53,10 +53,15 @@ public class RiskService {
      * Return the top N riskiest usernames with their scores,
      * ordered from highest score to lowest.
      *
-     * @param top number of entries to retrieve
+     * @param top number of entries to retrieve; zero or fewer yields an
+     *            empty list (a negative end index would otherwise widen
+     *            the ZREVRANGE window instead of shrinking it)
      * @return ordered list of username-to-score mappings
      */
     public List<Map<String, Object>> getTopRiskyUsers(long top) {
+        if (top <= 0) {
+            return List.of();
+        }
         var entries = redisTemplate.opsForZSet().reverseRangeWithScores(
                 RISK_HOTLIST_KEY, 0, top - 1);
         if (entries == null) {
