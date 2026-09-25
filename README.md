@@ -1,42 +1,114 @@
 # CacheGuard
 
-CacheGuard is a Maven Spring Boot 3.x service (Java 25) that uses Redis Stack for caching and related Redis-backed workflows.
+CacheGuard is a Redis-powered API gateway demo that protects login endpoints
+from request floods and credential-stuffing attacks. It combines an atomic
+per-IP sliding-window rate limiter with an anomaly-detection pipeline that
+scores suspicious accounts into a global risk hotlist and gates future logins
+according to that score.
 
-## Requirements
+## Overview
+
+CacheGuard sits in front of a small simulated auth API and demonstrates two
+defence layers working end to end:
+
+- **Rate limiting** - every `/api` request is counted in Redis; a burst from a
+  single IP is rejected with `429 Too Many Requests`.
+- **Anomaly detection** - every login attempt is streamed into Redis, where a
+  scheduled worker evaluates device-flood and known-credential signals, awards
+  risk points, and feeds a hotlist that the login endpoint consults before it
+  ever checks a password.
+
+## Architecture
+
+```
+Request -> RateLimiterFilter -> Redis Sliding-Window (Lua)
+                                      |
+                                +-----+-----+
+                                |           |
+                              allow       429 (blocked)
+                                |
+                                v
+                        POST /api/login events
+                                |
+                                v
+                Redis Streams (login:stream:{username})
+                                |
+                                v
+        Anomaly Worker (every 5s: HyperLogLog + Bloom filter)
+                                |
+                                v
+                    Risk Hot-List (risk:hotlist ZSET)
+                                |
+                                v
+                  Gateway Decision on next login:
+       allow -> CAPTCHA challenge -> block (403)
+```
+
+### Walkthrough
+
+1. **Request** - a client calls any `/api/...` endpoint, optionally declaring
+   its source address with `X-Forwarded-For`.
+2. **Filter** - `RateLimiterFilter` bumps the total-request counter and
+   resolves the client IP (first `X-Forwarded-For` value, else remote address).
+3. **Redis Sliding-Window** - a Lua script (`sliding_window.lua`) atomically
+   prunes expired timestamps, adds the current request to a sorted set and
+   returns the window count for `ratelimit:{ip}:{endpoint}`
+   (200 requests per 60-second window per IP+endpoint).
+4. **allow / 429** - inside the window the request proceeds to the controller;
+   over the limit the filter answers `429` and bumps the blocked counter.
+5. **Login events** - `POST /api/login` runs the risk gate first, then
+   `LoginEventService.recordAttempt` records the attempt: `XADD` to the user's
+   stream, `PFADD` the device id into the user's HyperLogLog, and `BF.ADD` the
+   SHA-256 credential hash to a global Bloom filter (the `BF.ADD` reply itself
+   yields the record-time *known credential* verdict that rides along in the
+   stream event).
+6. **Streams** - each active user has a `login:stream:{username}` stream; the
+   worker drains it using a per-user cursor (`worker:lastid:{username}`), so
+   every event is scored exactly once.
+7. **Anomaly Worker (HLL + Bloom)** - every 5 seconds `StreamConsumerWorker`
+   evaluates each new event through `AnomalyDetectionService`: a device count
+   above the threshold awards +25 points (device flood) and a known-credential
+   pattern awards +15 points (credential stuffing).
+8. **Risk Hot-List** - points accumulate in the `risk:hotlist` sorted set,
+   readable through `GET /api/hotlist` and the live dashboard.
+9. **Gateway Decision** - the next login reads that score: below
+   `allowScoreMax` credentials are checked normally, at or above
+   `allowScoreMax` a CAPTCHA challenge is required, at or above
+   `captchaScoreMax` the attempt is blocked outright with `403`.
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Language / runtime | Java 25 |
+| Framework | Spring Boot 3.5 (Web, Validation, Scheduling) |
+| Data store | Redis Stack - streams, HyperLogLog, sorted sets, RedisBloom |
+| Redis client | Spring Data Redis (Lettuce) |
+| Rate-limit logic | Atomic Lua script executed via `DefaultRedisScript` |
+| Build | Maven |
+| Packaging | Docker / Docker Compose |
+| Demo harness | Python 3 + `requests` (`scripts/load_test.py`) |
+| Dashboard | Static `dashboard.html` + Chart.js served by Spring Boot |
+
+## Setup
+
+### Prerequisites
 
 - Java 25
 - Maven 3.6.3+
-- Docker and Docker Compose (for local Redis Stack)
+- Docker with Docker Compose (local Redis Stack)
+- Python 3.9+ with the `requests` library (only for the demo scripts)
 
-## Configuration
+### Configuration
 
 Redis connection settings live in `src/main/resources/application.yml`:
 
-- `spring.data.redis.host` (default `localhost`)
-- `spring.data.redis.port` (default `6379`)
-- `spring.data.redis.timeout` (default `2000ms`)
+| Property | Default | Environment override |
+|---|---|---|
+| `spring.data.redis.host` | `localhost` | `REDIS_HOST` |
+| `spring.data.redis.port` | `6379` | `REDIS_PORT` |
+| `spring.data.redis.timeout` | `2000ms` | `REDIS_TIMEOUT` |
+| `server.port` | `8080` | `SERVER_PORT` |
 
-Override them with `REDIS_HOST`, `REDIS_PORT`, and `REDIS_TIMEOUT`.
-
-## Run with Docker Compose
-
-```bash
-docker compose up --build
-```
-
-This starts:
-
-- `redis` — `redis/redis-stack` on port `6379` (RedisInsight on `8001`)
-- `app` — the Spring Boot application on port `8080`, connected to Redis
-
-## Run locally
-
-Start Redis Stack, then:
-
-```bash
-mvn spring-boot:run
-```
-
-## Health check
-
-`GET /api/health` sends a Redis `PING` and returns `OK` when the connection works.
+Risk-scoring thresholds live under `cacheguard.risk.*` - see the commented
+`application.yml` for details.
