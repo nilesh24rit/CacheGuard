@@ -1,20 +1,31 @@
 spring:
   application:
+    # Application name shown in logs and Spring's runtime metadata.
     name: CacheGuard
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-      timeout: ${REDIS_TIMEOUT:2000ms}
+      # Redis connection used by the rate limiter, login streams, risk
+      # hotlist and stats counters. Each value can be overridden per
+      # environment (docker-compose sets REDIS_HOST=redis for the app).
+      host: ${REDIS_HOST:localhost}      # Redis host (default: localhost)
+      port: ${REDIS_PORT:6379}           # Redis port (default: 6379)
+      timeout: ${REDIS_TIMEOUT:2000ms}   # Command timeout so a down Redis fails fast (default: 2000ms)
 
 server:
+  # HTTP port the gateway listens on (docker-compose maps 8080:8080).
   port: 8080
 
 cacheguard:
   risk:
-    # distinct devices before a risk-point bump is triggered
+    # Risk-scoring thresholds bound to the RiskProperties record
+    # (prefix cacheguard.risk) and applied by the login risk gate.
+    #
+    # Distinct devices (HyperLogLog count) above which every scored login
+    # event awards +25 device-flood risk points.
     deviceCountThreshold: 3
-    # score ceiling for normal (allowed) login attempts
+    # Score at or above this value: the login answers with a CAPTCHA
+    # challenge (HTTP 200, requiresCaptcha=true) and credentials are not checked.
     allowScoreMax: 30.0
-    # score ceiling above which a CAPTCHA challenge is required
+    # Score at or above this value: the login is hard-blocked with
+    # HTTP 403 "Account locked due to suspicious activity".
     captchaScoreMax: 60.0
