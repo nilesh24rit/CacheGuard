@@ -177,7 +177,7 @@ function LogoMark() {
   );
 }
 
-function Sidebar({ active, onNavigate }: { active: NavId; onNavigate: (id: NavId, target: string) => void }) {
+function Sidebar({ active, onNavigate, riskCount }: { active: NavId; onNavigate: (id: NavId, target: string) => void; riskCount: number }) {
   return (
     <aside className="sidebar-shell fixed inset-y-0 left-0 z-20 flex w-[246px] flex-col border-r border-white/[.07] bg-[#0a0f13]/90 px-4 py-5 backdrop-blur-2xl">
       <div className="sidebar-brand flex items-center gap-3 px-2">
@@ -196,7 +196,7 @@ function Sidebar({ active, onNavigate }: { active: NavId; onNavigate: (id: NavId
             <button key={item.id} onClick={() => onNavigate(item.id, item.target)} className={`nav-button ${active === item.id ? "active" : ""}`} aria-current={active === item.id ? "page" : undefined}>
               <IconComponent size={16} strokeWidth={active === item.id ? 2.2 : 1.8} />
               <span className="sidebar-copy">{item.label}</span>
-              {item.id === "risk" && <span className="sidebar-copy ml-auto rounded-full bg-coral-400/10 px-1.5 py-0.5 font-mono text-[9px] text-[#ff9c87]">37</span>}
+              {item.id === "risk" && <span className="sidebar-copy ml-auto rounded-full bg-coral-400/10 px-1.5 py-0.5 font-mono text-[9px] text-[#ff9c87]">{riskCount}</span>}
             </button>
           );
         })}
@@ -382,7 +382,7 @@ export default function Home() {
     <div className="app-shell">
       <AnimatedCursor />
       <div className="mesh-field" />
-      <Sidebar active={activeNav} onNavigate={handleNavigate} />
+      <Sidebar active={activeNav} onNavigate={handleNavigate} riskCount={stats.hotlistSize} />
       <div className="main-shell relative ml-[246px] min-h-screen">
         <Topbar onCommand={() => setShowCommand(true)} onRefresh={() => void refresh(true)} refreshing={refreshing} connected={connected} lastSynced={lastSynced} />
         <main id="command-center" className="mx-auto max-w-[1500px] px-5 py-7 sm:px-8 sm:py-9 lg:px-10">
