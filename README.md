@@ -101,7 +101,8 @@ Request -> RateLimiterFilter -> Redis Sliding-Window (Lua)
 | Build | Maven |
 | Packaging | Docker / Docker Compose |
 | Demo harness | Python 3 + `requests` (`scripts/load_test.py`) |
-| Dashboard | Static `dashboard.html` + Chart.js served by Spring Boot |
+| Frontend | React 19 + Vite security console (`console/`), served at `/` |
+| Legacy dashboard | Static `dashboard.html` + Chart.js served by Spring Boot |
 
 ## Setup
 
@@ -111,6 +112,7 @@ Request -> RateLimiterFilter -> Redis Sliding-Window (Lua)
 - Maven 3.6.3+
 - Docker with Docker Compose (local Redis Stack)
 - Python 3.9+ with the `requests` library (only for the demo scripts)
+- Node 20+ and pnpm (only when rebuilding the console frontend in `console/`)
 
 ### Configuration
 
@@ -180,6 +182,32 @@ first 200 requests as `200 OK` and the remainder as `429 rate-limited`;
 `--stuffing` waits for the anomaly worker, fetches the hotlist itself and
 prints the top flagged usernames with the stuffed account marked.
 
+### 4. Open the security console
+
+Once the app is up, open the React console:
+
+```
+http://localhost:8080/
+```
+
+It polls `GET /api/stats` and `GET /api/hotlist?top=5` on the same origin
+every 30 seconds and renders the live request/blocked counters, the risk
+hotlist with gateway actions and the Redis topology view. The classic
+Chart.js dashboard remains available at
+`http://localhost:8080/dashboard.html`.
+
+The production build lives in `src/main/resources/static/` and is
+committed, so `mvn spring-boot:run` serves the console without Node. After
+changing sources in `console/`, rebuild and refresh the served bundle:
+
+```bash
+cd console
+pnpm install
+pnpm build
+# then replace src/main/resources/static/index.html and
+# src/main/resources/static/assets/ with dist/public/ and restart the app
+```
+
 ### Useful endpoints
 
 | Endpoint | Purpose |
@@ -189,6 +217,7 @@ prints the top flagged usernames with the stuffed account marked.
 | `GET /api/hotlist?top=N` | Top riskiest usernames |
 | `GET /api/risk/{username}` | Risk score for a single user |
 | `GET /api/events/{username}` | Recent login events for a user |
+| `GET /` | Security console (React frontend) |
 | `GET /dashboard.html` | Live dashboard (Chart.js) |
 
 ### Run the tests
