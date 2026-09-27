@@ -111,8 +111,8 @@ const seedDetections: Detection[] = [
 
 const normalizeStats = (payload: any): Stats => ({
   totalRequests: Number(payload?.totalRequests ?? payload?.requestsTotal ?? payload?.total ?? 0),
-  blockedRequests: Number(payload?.blockedRequests ?? payload?.requestsBlocked ?? payload?.blocked ?? 0),
-  flaggedLogins: Number(payload?.flaggedLogins ?? payload?.loginsFlagged ?? payload?.flagged ?? 0),
+  blockedRequests: Number(payload?.blockedCount ?? payload?.blockedRequests ?? payload?.requestsBlocked ?? payload?.blocked ?? 0),
+  flaggedLogins: Number(payload?.flaggedCount ?? payload?.flaggedLogins ?? payload?.loginsFlagged ?? payload?.flagged ?? 0),
   hotlistSize: Number(payload?.hotlistSize ?? payload?.riskHotlistSize ?? payload?.hotlist ?? 0),
 });
 
