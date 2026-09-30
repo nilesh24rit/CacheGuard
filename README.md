@@ -1,231 +1,149 @@
-# CacheGuard
+<div align="center">
 
-CacheGuard is a Redis-powered API gateway demo that protects login endpoints
-from request floods and credential-stuffing attacks. It combines an atomic
-per-IP sliding-window rate limiter with an anomaly-detection pipeline that
-scores suspicious accounts into a global risk hotlist and gates future logins
-according to that score.
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:DC382D,100:6DB33F&height=200&section=header&text=CacheGuard&fontSize=62&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Redis-backed%20protection%20for%20Spring%20Boot%20services&descAlignY=60&descSize=18" alt="CacheGuard banner" />
 
-## Overview
+<p>
+  <img src="https://img.shields.io/badge/Java-25-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white" alt="Java 25" />
+  <img src="https://img.shields.io/badge/Spring%20Boot-3.x-6DB33F?style=for-the-badge&logo=springboot&logoColor=white" alt="Spring Boot 3" />
+  <img src="https://img.shields.io/badge/Redis%20Stack-DC382D?style=for-the-badge&logo=redis&logoColor=white" alt="Redis Stack" />
+  <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Compose" />
+  <img src="https://img.shields.io/badge/Maven-3.6.3+-C71A36?style=for-the-badge&logo=apachemaven&logoColor=white" alt="Maven" />
+</p>
 
-CacheGuard sits in front of a small simulated auth API and demonstrates two
-defence layers working end to end:
+<p>
+  <a href="#-quick-start"><b>Quick Start</b></a> ·
+  <a href="#-architecture"><b>Architecture</b></a> ·
+  <a href="#%EF%B8%8F-configuration"><b>Configuration</b></a> ·
+  <a href="#-api"><b>API</b></a>
+</p>
 
-- **Rate limiting** - every `/api` request is counted in Redis; a burst from a
-  single IP is rejected with `429 Too Many Requests`.
-- **Anomaly detection** - every login attempt is streamed into Redis, where a
-  scheduled worker evaluates device-flood and known-credential signals, awards
-  risk points, and feeds a hotlist that the login endpoint consults before it
-  ever checks a password.
+</div>
 
-## Architecture
+---
 
-```
-Request -> RateLimiterFilter -> Redis Sliding-Window (Lua)
-                                      |
-                                +-----+-----+
-                                |           |
-                              allow       429 (blocked)
-                                |
-                                v
-                        POST /api/login events
-                                |
-                                v
-                Redis Streams (login:stream:{username})
-                                |
-                                v
-        Anomaly Worker (every 5s: HyperLogLog + Bloom filter)
-                                |
-                                v
-                    Risk Hot-List (risk:hotlist ZSET)
-                                |
-                                v
-                  Gateway Decision on next login:
-       allow -> CAPTCHA challenge -> block (403)
-```
+## ✨ Overview
 
-### Walkthrough
+**CacheGuard** is a Spring Boot 3.x service built on **Java 25** that uses **Redis Stack** for caching and Redis-backed workflows such as rate limiting. Redis handles the fast, shared state, and Spring Boot handles the application logic.
 
-1. **Request** - a client calls any `/api/...` endpoint, optionally declaring
-   its source address with `X-Forwarded-For`.
-2. **Filter** - `RateLimiterFilter` bumps the total-request counter and
-   resolves the client IP (first `X-Forwarded-For` value, else remote address).
-3. **Redis Sliding-Window** - a Lua script (`sliding_window.lua`) atomically
-   prunes expired timestamps, adds the current request to a sorted set and
-   returns the window count for `ratelimit:{ip}:{endpoint}`
-   (200 requests per 60-second window per IP+endpoint).
-4. **allow / 429** - inside the window the request proceeds to the controller;
-   over the limit the filter answers `429` and bumps the blocked counter.
-5. **Login events** - `POST /api/login` runs the risk gate first, then
-   `LoginEventService.recordAttempt` records the attempt: `XADD` to the user's
-   stream, `PFADD` the device id into the user's HyperLogLog, and `BF.ADD` the
-   SHA-256 credential hash to a global Bloom filter (the `BF.ADD` reply itself
-   yields the record-time *known credential* verdict that rides along in the
-   stream event).
-6. **Streams** - each active user has a `login:stream:{username}` stream; the
-   worker drains it using a per-user cursor (`worker:lastid:{username}`), so
-   every event is scored exactly once.
-7. **Anomaly Worker (HLL + Bloom)** - every 5 seconds `StreamConsumerWorker`
-   evaluates each new event through `AnomalyDetectionService`: a device count
-   above the threshold awards +25 points (device flood) and a known-credential
-   pattern awards +15 points (credential stuffing).
-8. **Risk Hot-List** - points accumulate in the `risk:hotlist` sorted set,
-   readable through `GET /api/hotlist` and the live dashboard.
-9. **Gateway Decision** - the next login reads that score: below
-   `allowScoreMax` credentials are checked normally, at or above
-   `allowScoreMax` a CAPTCHA challenge is required, at or above
-   `captchaScoreMax` the attempt is blocked outright with `403`.
+The whole stack comes up with a single command, and **RedisInsight** is included so you can see what's happening inside Redis as it happens.
 
-## Redis Key Schema
+## 🚀 Highlights
 
-| Key pattern | Type | Purpose | TTL |
-|---|---|---|---|
-| `ratelimit:{ip}:{endpoint}` | Sorted set | Sliding-window rate-limit counter: one member per request scored by timestamp; the Lua script prunes entries older than the window and returns the live count (limit 200 per 60 s) | 60 s, refreshed on every request |
-| `login:stream:{username}` | Stream | Per-user login-attempt events (`ip`, `deviceId`, `result`, `timestamp`, `knownCredential`) written with `XADD`, drained by the anomaly worker | none (persistent) |
-| `devices:hll:{username}` | HyperLogLog | Approximate set of distinct device ids per user; `PFCOUNT` above `cacheguard.risk.deviceCountThreshold` awards device-spike risk points | none (persistent) |
-| `creds:bloom:attempts` | Bloom filter (RedisBloom) | SHA-256 hashes of every submitted `username:password` pair; the `BF.ADD` reply (0 = already present) produces the record-time known-credential verdict | none (persistent) |
-| `risk:hotlist` | Sorted set | Global risk score per username (`ZINCRBY`); read by the login risk gate and by `GET /api/hotlist` | none (persistent) |
-| `active:usernames` | Set | Users with recorded login activity; tells the worker which streams to scan | none (persistent) |
-| `worker:lastid:{username}` | String | Per-user cursor: ID of the last stream entry that was scored, so each event contributes points exactly once | none (persistent) |
-| `stats:requests:total`, `stats:requests:blocked`, `stats:logins:flagged` | String (counter) | Monotonic `INCR` counters served by `GET /api/stats` and the dashboard | none (persistent) |
-
-## Tech stack
-
-| Layer | Technology |
-|---|---|
-| Language / runtime | Java 25 |
-| Framework | Spring Boot 3.5 (Web, Validation, Scheduling) |
-| Data store | Redis Stack - streams, HyperLogLog, sorted sets, RedisBloom |
-| Redis client | Spring Data Redis (Lettuce) |
-| Rate-limit logic | Atomic Lua script executed via `DefaultRedisScript` |
-| Build | Maven |
-| Packaging | Docker / Docker Compose |
-| Demo harness | Python 3 + `requests` (`scripts/load_test.py`) |
-| Frontend | React 19 + Vite security console (`console/`), served at `/` |
-| Legacy dashboard | Static `dashboard.html` + Chart.js served by Spring Boot |
-
-## Setup
-
-### Prerequisites
-
-- Java 25
-- Maven 3.6.3+
-- Docker with Docker Compose (local Redis Stack)
-- Python 3.9+ with the `requests` library (only for the demo scripts)
-- Node 20+ and pnpm (only when rebuilding the console frontend in `console/`)
-
-### Configuration
-
-Redis connection settings live in `src/main/resources/application.yml`:
-
-| Property | Default | Environment override |
+| | Feature | Details |
 |---|---|---|
-| `spring.data.redis.host` | `localhost` | `REDIS_HOST` |
-| `spring.data.redis.port` | `6379` | `REDIS_PORT` |
-| `spring.data.redis.timeout` | `2000ms` | `REDIS_TIMEOUT` |
-| `server.port` | `8080` | `SERVER_PORT` |
+| ⚡ | **Redis-powered** | Low-latency caching and shared state on Redis Stack |
+| 🛡️ | **Rate limiting** | Redis-backed request guarding for your endpoints |
+| 🐳 | **One-command setup** | `docker compose up --build` starts the app and Redis together |
+| 🔍 | **Built-in visibility** | RedisInsight UI on port `8001` |
+| ❤️ | **Health endpoint** | `GET /api/health` verifies the live Redis connection |
+| 🔧 | **Env-driven config** | Override host, port and timeout without touching code |
 
-Risk-scoring thresholds live under `cacheguard.risk.*` - see the commented
-`application.yml` for details.
+## 🏗️ Architecture
 
-## How to Run
+```mermaid
+flowchart LR
+    C([👤 Client]) -->|HTTP :8080| A
 
-### 1. Start the full stack with Docker Compose
+    subgraph Docker Compose
+        A["🍃 CacheGuard<br/>Spring Boot 3 · Java 25"]
+        R[("🔴 Redis Stack<br/>:6379")]
+        I["🔍 RedisInsight<br/>:8001"]
+        A <-->|Spring Data Redis| R
+        I -.->|inspect| R
+    end
+
+    style A fill:#6DB33F,stroke:#3d6b22,color:#fff
+    style R fill:#DC382D,stroke:#8a1f18,color:#fff
+    style I fill:#2b2b2b,stroke:#555,color:#fff
+```
+
+## ⚡ Quick Start
+
+### 🐳 Option 1 — Docker Compose (recommended)
 
 ```bash
+git clone https://github.com/nilesh24rit/CacheGuard.git
+cd CacheGuard
 docker compose up --build
 ```
 
-This starts:
+| Service | What it is | URL |
+|---|---|---|
+| 🍃 `app` | CacheGuard (Spring Boot) | http://localhost:8080 |
+| 🔴 `redis` | `redis/redis-stack` | `localhost:6379` |
+| 🔍 RedisInsight | Redis GUI | http://localhost:8001 |
 
-- `cacheguard-redis` - Redis Stack on `6379` (RedisInsight on `8001`)
-- `cacheguard-app` - the Spring Boot application on `8080`
+### 💻 Option 2 — Run locally
 
-Verify it is up:
-
-```bash
-curl http://localhost:8080/api/health   # -> OK
-```
-
-### 2. Or run the app with Maven (local development)
-
-Start Redis Stack first, then run the app directly:
+Start Redis Stack first (for example via `docker compose up redis`), then:
 
 ```bash
-docker compose up -d redis
 mvn spring-boot:run
 ```
 
-The app connects to `localhost:6379` by default; override with the
-`REDIS_HOST`, `REDIS_PORT` and `REDIS_TIMEOUT` environment variables.
+### 📋 Requirements
 
-### 3. Run the demo scripts
+- ☕ **Java 25**
+- 📦 **Maven 3.6.3+**
+- 🐳 **Docker & Docker Compose** (for local Redis Stack)
 
-Install the dependency once, then drive each mode independently
-(see [`scripts/README.md`](scripts/README.md) for all options):
+## 🔌 API
 
-```bash
-python -m pip install requests
+### `GET /api/health`
 
-# Benign traffic: a few requests/sec from several IPs - all 200s
-python scripts/load_test.py --normal
-
-# Flood: hundreds of requests/sec from one fixed IP - 200s then 429s
-python scripts/load_test.py --attack
-
-# Credential stuffing, followed by an automatic GET /api/hotlist proof
-python scripts/load_test.py --stuffing
-```
-
-Expected outcome: `--normal` reports only `200`s; `--attack` reports the
-first 200 requests as `200 OK` and the remainder as `429 rate-limited`;
-`--stuffing` waits for the anomaly worker, fetches the hotlist itself and
-prints the top flagged usernames with the stuffed account marked.
-
-### 4. Open the security console
-
-Once the app is up, open the React console:
-
-```
-http://localhost:8080/
-```
-
-It polls `GET /api/stats` and `GET /api/hotlist?top=5` on the same origin
-every 30 seconds and renders the live request/blocked counters, the risk
-hotlist with gateway actions and the Redis topology view. The classic
-Chart.js dashboard remains available at
-`http://localhost:8080/dashboard.html`.
-
-The production build lives in `src/main/resources/static/` and is
-committed, so `mvn spring-boot:run` serves the console without Node. After
-changing sources in `console/`, rebuild and refresh the served bundle:
+Sends a Redis `PING` and returns `OK` when the connection works.
 
 ```bash
-cd console
-pnpm install
-pnpm build
-# then replace src/main/resources/static/index.html and
-# src/main/resources/static/assets/ with dist/public/ and restart the app
+curl http://localhost:8080/api/health
+# OK
 ```
 
-### Useful endpoints
+## ⚙️ Configuration
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/health` | Redis `PING` health check |
-| `GET /api/stats` | Total/blocked/flagged counters + hotlist size |
-| `GET /api/hotlist?top=N` | Top riskiest usernames |
-| `GET /api/risk/{username}` | Risk score for a single user |
-| `GET /api/events/{username}` | Recent login events for a user |
-| `GET /` | Security console (React frontend) |
-| `GET /dashboard.html` | Live dashboard (Chart.js) |
+Redis settings live in [`src/main/resources/application.yml`](src/main/resources/application.yml) and can be overridden with environment variables.
 
-### Run the tests
+| Property | Env variable | Default |
+|---|---|---|
+| `spring.data.redis.host` | `REDIS_HOST` | `localhost` |
+| `spring.data.redis.port` | `REDIS_PORT` | `6379` |
+| `spring.data.redis.timeout` | `REDIS_TIMEOUT` | `2000ms` |
+
+<details>
+<summary><b>Example: pointing at a remote Redis</b></summary>
 
 ```bash
-mvn test
+REDIS_HOST=my-redis.example.com \
+REDIS_PORT=6380 \
+REDIS_TIMEOUT=3000ms \
+mvn spring-boot:run
 ```
 
-Tests start a Redis container through Testcontainers when Docker is
-available, otherwise they fall back to a Redis already running on
-`localhost:6379`; without any Redis they skip themselves.
+</details>
+
+## 📁 Project Structure
+
+```text
+CacheGuard
+├── src/                  # Spring Boot application source
+├── Dockerfile            # Container image for the app
+├── docker-compose.yml    # App + Redis Stack
+└── pom.xml               # Maven build (Java 25, Spring Boot 3.x)
+```
+
+## 🧰 Tech Stack
+
+<p>
+  <img src="https://skillicons.dev/icons?i=java,spring,redis,docker,maven&theme=dark" alt="Tech stack" />
+</p>
+
+## 👤 Author
+
+**Nilesh** · [@nilesh24rit](https://github.com/nilesh24rit)
+
+<div align="center">
+
+⭐ If you find this useful, consider giving the repo a star.
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:6DB33F,100:DC382D&height=100&section=footer" alt="footer" />
+
+</div>
